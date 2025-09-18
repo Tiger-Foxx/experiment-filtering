@@ -1,0 +1,12 @@
+engine:
+  mode: "sequential"  # sequential | hybrid
+  queue_num: 0        # NFQUEUE number
+  max_packet_size: 65535
+  
+performance:
+  enable_metrics: true
+  metric_interval: 1.0  # seconds
+  
+rules:
+  file: "rules/example_rules.json"
+  reload_on_change: false

@@ -1,6 +1,5 @@
-import pyshark
-import io
-from typing import Optional, Dict, Any
+import scapy.all as scapy
+from typing import Dict, Any
 import time
 
 class PacketParser:
@@ -9,7 +8,7 @@ class PacketParser:
         self._parse_cache = {}
         
     def parse_packet(self, raw_packet: bytes) -> Dict[str, Any]:
-        """Parse packet avec pyshark - extraction L3/L4/L7 optimisée"""
+        """Parse packet avec Scapy - optimisé pour NFQUEUE"""
         start_time = time.perf_counter()
         
         # Cache check (simple hash)
@@ -18,16 +17,14 @@ class PacketParser:
             return self._parse_cache[packet_hash]
         
         try:
-            # Pyshark parsing depuis bytes
-            packet_io = io.BytesIO(raw_packet)
-            capture = pyshark.FileCapture(packet_io, display_filter=None)
-            packet = next(iter(capture))
+            # Scapy parsing depuis bytes bruts (NFQUEUE)
+            pkt = scapy.IP(raw_packet)
             
             parsed_data = {
                 'parse_time': 0,
-                'layer3': self._extract_l3(packet),
-                'layer4': self._extract_l4(packet), 
-                'layer7': self._extract_l7(packet)
+                'layer3': self._extract_l3_scapy(pkt),
+                'layer4': self._extract_l4_scapy(pkt), 
+                'layer7': self._extract_l7_scapy(pkt)
             }
             
             parsed_data['parse_time'] = time.perf_counter() - start_time
@@ -46,95 +43,121 @@ class PacketParser:
                 'layer3': {}, 'layer4': {}, 'layer7': {}
             }
     
-    def _extract_l3(self, packet) -> Dict[str, Any]:
-        """Extraction L3 (IP) ultra-rapide"""
+    def _extract_l3_scapy(self, pkt) -> Dict[str, Any]:
+        """Extraction L3 (IP) avec Scapy"""
         l3_data = {}
         
-        if hasattr(packet, 'ip'):
+        if pkt.haslayer(scapy.IP):
+            ip_layer = pkt[scapy.IP]
             l3_data.update({
-                'src_ip': packet.ip.src,
-                'dst_ip': packet.ip.dst,
-                'protocol': packet.ip.proto,
-                'ttl': int(packet.ip.ttl),
-                'length': int(packet.ip.len)
+                'src_ip': ip_layer.src,
+                'dst_ip': ip_layer.dst,
+                'protocol': ip_layer.proto,
+                'ttl': ip_layer.ttl,
+                'length': ip_layer.len
             })
-        elif hasattr(packet, 'ipv6'):
+        elif pkt.haslayer(scapy.IPv6):
+            ipv6_layer = pkt[scapy.IPv6]
             l3_data.update({
-                'src_ip': packet.ipv6.src,
-                'dst_ip': packet.ipv6.dst, 
-                'protocol': packet.ipv6.nxt,
-                'hop_limit': int(packet.ipv6.hlim)
+                'src_ip': ipv6_layer.src,
+                'dst_ip': ipv6_layer.dst,
+                'protocol': ipv6_layer.nh,
+                'hop_limit': ipv6_layer.hlim
             })
         
         return l3_data
     
-    def _extract_l4(self, packet) -> Dict[str, Any]:
-        """Extraction L4 (TCP/UDP) ultra-rapide"""
+    def _extract_l4_scapy(self, pkt) -> Dict[str, Any]:
+        """Extraction L4 (TCP/UDP) avec Scapy"""
         l4_data = {}
         
-        if hasattr(packet, 'tcp'):
+        if pkt.haslayer(scapy.TCP):
+            tcp_layer = pkt[scapy.TCP]
             l4_data.update({
                 'protocol': 'tcp',
-                'src_port': int(packet.tcp.srcport),
-                'dst_port': int(packet.tcp.dstport),
-                'flags': packet.tcp.flags,
-                'seq': int(packet.tcp.seq),
-                'ack': int(packet.tcp.ack) if hasattr(packet.tcp, 'ack') else 0,
-                'window': int(packet.tcp.window)
+                'src_port': tcp_layer.sport,
+                'dst_port': tcp_layer.dport,
+                'flags': str(tcp_layer.flags),
+                'seq': tcp_layer.seq,
+                'ack': tcp_layer.ack,
+                'window': tcp_layer.window
             })
-        elif hasattr(packet, 'udp'):
+        elif pkt.haslayer(scapy.UDP):
+            udp_layer = pkt[scapy.UDP]
             l4_data.update({
                 'protocol': 'udp',
-                'src_port': int(packet.udp.srcport),
-                'dst_port': int(packet.udp.dstport),
-                'length': int(packet.udp.length)
+                'src_port': udp_layer.sport,
+                'dst_port': udp_layer.dport,
+                'length': udp_layer.len
             })
         
         return l4_data
     
-    def _extract_l7(self, packet) -> Dict[str, Any]:
-        """Extraction L7 (HTTP/Apps) avec reassembly automatique"""
+    def _extract_l7_scapy(self, pkt) -> Dict[str, Any]:
+        """Extraction L7 (HTTP/Apps) avec Scapy"""
         l7_data = {}
         
-        # HTTP detection et parsing
-        if hasattr(packet, 'http'):
-            l7_data['protocol'] = 'http'
-            
-            # HTTP Request
-            if hasattr(packet.http, 'request_method'):
-                l7_data.update({
-                    'method': packet.http.request_method,
-                    'uri': packet.http.request_uri if hasattr(packet.http, 'request_uri') else '',
-                    'host': packet.http.host if hasattr(packet.http, 'host') else '',
-                    'user_agent': packet.http.user_agent if hasattr(packet.http, 'user_agent') else '',
-                    'referer': packet.http.referer if hasattr(packet.http, 'referer') else ''
-                })
-                
-                # Headers parsing complet
-                l7_data['headers'] = {}
-                for field_name in packet.http.field_names:
-                    if field_name.startswith('http.'):
-                        header_name = field_name.replace('http.', '').replace('_', '-')
-                        l7_data['headers'][header_name] = getattr(packet.http, field_name.split('.')[-1])
-            
-            # HTTP Response  
-            elif hasattr(packet.http, 'response_code'):
-                l7_data.update({
-                    'response_code': int(packet.http.response_code),
-                    'content_type': packet.http.content_type if hasattr(packet.http, 'content_type') else '',
-                    'content_length': packet.http.content_length if hasattr(packet.http, 'content_length') else ''
-                })
+        # Check for HTTP traffic (TCP port 80/443/8080)
+        if pkt.haslayer(scapy.TCP):
+            tcp_layer = pkt[scapy.TCP]
+            if tcp_layer.dport in [80, 443, 8080] or tcp_layer.sport in [80, 443, 8080]:
+                # Try to extract HTTP data from payload
+                if pkt.haslayer(scapy.Raw):
+                    payload = bytes(pkt[scapy.Raw])
+                    if payload:
+                        http_data = self._parse_http_payload(payload)
+                        l7_data.update(http_data)
         
-        # DNS detection
-        elif hasattr(packet, 'dns'):
-            l7_data.update({
-                'protocol': 'dns',
-                'query_name': packet.dns.qry_name if hasattr(packet.dns, 'qry_name') else '',
-                'query_type': packet.dns.qry_type if hasattr(packet.dns, 'qry_type') else ''
-            })
+        # Check for DNS traffic (UDP port 53)
+        elif pkt.haslayer(scapy.UDP):
+            udp_layer = pkt[scapy.UDP]
+            if udp_layer.dport == 53 or udp_layer.sport == 53:
+                if pkt.haslayer(scapy.DNS):
+                    dns_layer = pkt[scapy.DNS]
+                    l7_data.update({
+                        'protocol': 'dns',
+                        'query_name': dns_layer.qd.qname.decode('utf-8', errors='ignore') if dns_layer.qd else '',
+                        'query_type': dns_layer.qd.qtype if dns_layer.qd else 0
+                    })
         
-        # Raw payload si disponible
-        if hasattr(packet, 'data'):
-            l7_data['payload'] = packet.data.data if hasattr(packet.data, 'data') else ''
+        # Add raw payload if available
+        if pkt.haslayer(scapy.Raw):
+            raw_payload = bytes(pkt[scapy.Raw])
+            l7_data['payload'] = raw_payload.decode('utf-8', errors='ignore')[:200]  # Limit to first 200 chars
         
         return l7_data
+    
+    def _parse_http_payload(self, payload: bytes) -> Dict[str, Any]:
+        """Simple HTTP parsing from raw payload"""
+        http_data = {'protocol': 'http'}
+        
+        try:
+            payload_str = payload.decode('utf-8', errors='ignore')
+            lines = payload_str.split('\r\n')
+            
+            if lines and len(lines) > 0:
+                # Parse first line (request/response)
+                first_line = lines[0]
+                
+                # HTTP Request
+                if any(method in first_line for method in ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS']):
+                    parts = first_line.split(' ')
+                    if len(parts) >= 3:
+                        http_data['method'] = parts[0]
+                        http_data['uri'] = parts[1]
+                        
+                        # Parse headers
+                        headers = {}
+                        for line in lines[1:]:
+                            if ':' in line and line.strip():
+                                key, value = line.split(':', 1)
+                                headers[key.strip().lower()] = value.strip()
+                        
+                        http_data['headers'] = headers
+                        http_data['host'] = headers.get('host', '')
+                        http_data['user_agent'] = headers.get('user-agent', '')
+        
+        except Exception:
+            pass
+        
+        return http_data

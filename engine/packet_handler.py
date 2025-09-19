@@ -33,10 +33,13 @@ class PacketHandler:
         
         logger.info(f"PacketHandler initialized in {mode} mode")
     
-    def process_packet(self, packet: netfilterqueue.NetfilterPacket):
+    def process_packet(self, packet):
         """
         Main packet processing function called by NFQUEUE
         This is where the REAL network filtering happens
+        
+        Args:
+            packet: netfilterqueue packet object (no type hint due to library limitations)
         """
         start_time = time.perf_counter()
         self.packet_count += 1
